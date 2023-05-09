@@ -38,6 +38,8 @@ type GrafanaReconciler struct {
 //+kubebuilder:rbac:groups=monitor.example.com,resources=grafanas,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=monitor.example.com,resources=grafanas/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitor.example.com,resources=grafanas/finalizers,verbs=update
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
