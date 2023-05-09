@@ -18,6 +18,9 @@ package controllers
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -51,11 +54,58 @@ type GrafanaReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.12.1/pkg/reconcile
 func (r *GrafanaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// TODO(user): your logic here
+	instance := &monitorv1.Grafana{}
+
+	err := r.Get(ctx, req.NamespacedName, instance)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Grafana resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+
+		logger.Error(err, "Failed to get Grafana")
+		return ctrl.Result{RequeueAfter: time.Second * 5}, err
+	}
+
+	componentName := instance.Spec.Component
+	appName := instance.Name + "-" + componentName
 
 	return ctrl.Result{}, nil
+}
+
+func (r *GrafanaReconciler) deploymentIfNotExist(ctx context.Context, appName, namespace string) (bool, error) {
+	logger := log.FromContext(ctx)
+	_, err := r.getDeployment(ctx, appName, namespace)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		logger.Error(err, "Error while getting existed monitor deploy")
+		return false, err
+	}
+	return true, nil
+
+}
+
+func (r *GrafanaReconciler) getDeployment(ctx context.Context, appName, namespace string) (*appsv1.Deployment, error) {
+	logger := log.FromContext(ctx)
+
+	deployment := &appsv1.Deployment{}
+
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      appName,
+		Namespace: namespace,
+	}, deployment)
+	if err != nil {
+		logger.Error(err, "Error while checking existed monitor deploy")
+		return nil, err
+	}
+
+	return deployment, nil
+
 }
 
 // SetupWithManager sets up the controller with the Manager.
