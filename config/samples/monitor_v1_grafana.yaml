@@ -1,0 +1,6 @@
+apiVersion: monitor.example.com/v1
+kind: Grafana
+metadata:
+  name: grafana-sample
+spec:
+  # TODO(user): Add fields here
