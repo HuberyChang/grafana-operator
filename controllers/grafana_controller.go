@@ -18,9 +18,16 @@ package controllers
 
 import (
 	"context"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,6 +80,77 @@ func (r *GrafanaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	componentName := instance.Spec.Component
 	appName := instance.Name + "-" + componentName
 
+	// 检查 grafana deployment是否存在
+	dExist, err := r.deploymentIfNotExist(ctx, appName, instance.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 如果 deployment 不存在，则创建
+	if !dExist {
+		if err := r.updateInstanceStatus(ctx, instance, "Creating grafana deployment"); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		grafanaDeploy := r.createDeployment(appName, instance.Namespace, 1)
+		if err := controllerutil.SetControllerReference(instance, grafanaDeploy, r.Scheme); err != nil {
+			_ = r.updateInstanceStatus(ctx, instance, "Failed to bind grafana deployment")
+			logger.Error(err, "Error while binding grafana deployment")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.Client.Create(ctx, grafanaDeploy); err != nil {
+			_ = r.updateInstanceStatus(ctx, instance, "Failed to create grafana deployment")
+			logger.Error(err, "Error while creating grafana deployment")
+			return ctrl.Result{}, err
+
+		}
+
+		if err := r.updateInstanceStatus(ctx, instance, "Created grafana deployment"); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{Requeue: true}, nil
+
+	}
+
+	// 检查 grafana service是否存在
+	svcExist, err := r.serviceIfNotExist(ctx, appName, instance.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 如果 service 不存在，则创建
+	if !svcExist {
+		if err := r.updateInstanceStatus(ctx, instance, "Creating grafana service"); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		grafanaSvc := r.createService(appName, instance.Namespace)
+		if err := controllerutil.SetControllerReference(instance, grafanaSvc, r.Scheme); err != nil {
+			_ = r.updateInstanceStatus(ctx, instance, "Failed to bind grafana service")
+			logger.Error(err, "Error while binding grafana service")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.Client.Create(ctx, grafanaSvc); err != nil {
+			_ = r.updateInstanceStatus(ctx, instance, "Failed to creating grafana service")
+			logger.Error(err, "Error while creating grafana service")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.updateInstanceStatus(ctx, instance, "Created grafana service"); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{Requeue: true}, nil
+
+	}
+
+	if err := r.updateInstanceStatus(ctx, instance, "Successful"); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -87,7 +165,6 @@ func (r *GrafanaReconciler) deploymentIfNotExist(ctx context.Context, appName, n
 		return false, err
 	}
 	return true, nil
-
 }
 
 func (r *GrafanaReconciler) getDeployment(ctx context.Context, appName, namespace string) (*appsv1.Deployment, error) {
@@ -105,7 +182,101 @@ func (r *GrafanaReconciler) getDeployment(ctx context.Context, appName, namespac
 	}
 
 	return deployment, nil
+}
 
+func (r *GrafanaReconciler) createDeployment(appName, namespace string, replicas int32) *appsv1.Deployment {
+	appLabels := map[string]string{"app": appName}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appName,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: appLabels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: appLabels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "grafana",
+							Image: "grafana/grafana",
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 3000,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *GrafanaReconciler) serviceIfNotExist(ctx context.Context, appName, namespace string) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	if _, err := r.getService(ctx, appName, namespace); err != nil {
+		if errors.IsNotFound(err) {
+			return false, err
+		}
+		logger.Error(err, "Error while checking existed grafana service")
+		return false, err
+
+	}
+	return true, nil
+}
+
+func (r *GrafanaReconciler) getService(ctx context.Context, appName, namespace string) (*corev1.Service, error) {
+	logger := log.FromContext(ctx)
+
+	svc := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      appName + "-SVC",
+		Namespace: namespace,
+	}, svc); err != nil {
+		logger.Error(err, "Error while getting grafana service")
+		return nil, err
+
+	}
+	return svc, nil
+}
+
+func (r *GrafanaReconciler) createService(appName, namespace string) *corev1.Service {
+	appLabels := map[string]string{"app": appName}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      appName + "-service",
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: appLabels,
+			Type:     corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "web",
+					Port:       3000,
+					TargetPort: intstr.FromInt(3000),
+				},
+			},
+		},
+	}
+}
+
+func (r *GrafanaReconciler) updateInstanceStatus(ctx context.Context, instance *monitorv1.Grafana, result string) error {
+	logger := log.FromContext(ctx)
+
+	instance.Status.Result = result
+	if err := r.Client.Status().Update(ctx, instance); err != nil {
+		logger.Error(err, "Error while updating instance status")
+		return err
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
